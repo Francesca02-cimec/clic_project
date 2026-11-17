@@ -2,27 +2,33 @@
 clear
 close all
 
-cfg.nBlocks         = 3;
-cfg.blockTrials     = [20 10 10];  % valid trials per block
+cfg.nBlocks         = 4;
+cfg.blockTrials     = [20 20 30 30];  % valid trials per block
 cfg.clickTotal      = 8;           % total clicks per trial (CHANGE TO 10 FOR OTHER TRIALS; max |delta| = clickTotal/2)
 cfg.clickDur        = 0.030;       % click duration, s
 cfg.clickFreq       = 2000;        % Hz (unused while clic.wav is used)
 
-% ---- DIFFICULTY RAMP: one entry per block, easy -> hard ----------------
+% ---- BLOCK SETTINGS: one entry per block ------------------------------
+% Block 1: easy, unlimited time, no stall check
+% Block 2: same as block 1, but the "DON'T STOP" stall check now applies
+% Block 3: harder, 0.8 s limit, stall check
+% Block 4: hardest, 0.4 s limit, stall check
 % delta = shift from an even split. Click difference (L-R) = 2*delta.
 % Smaller |delta| = harder. delta 0 = tie (no true answer, correct side random).
-cfg.blockDeltas     = {[-4 -3 3 4], [-3 -2 2 3], [-2 -1 0 1 2]};
+cfg.blockDeltas     = {[-4 -3 3 4], [-4 -3 3 4], [-3 -2 2 3], [-2 -1 0 1 2]};
 % Seconds allowed to reach a circle after the audio ends (shorter = harder).
-% Inf = no time limit (block 1).
-cfg.blockTimeout    = [Inf 0.8 0.4];
+% Inf = no time limit (blocks 1 and 2).
+cfg.blockTimeout    = [Inf Inf 0.8 0.4];
 % Minimum movement speed (0 = no check). Same formula as your trackSpeed:
 % mean pixels/sample over 10 samples must exceed this, else "DON'T STOP"
-cfg.blockMinVel     = [0 0 5];
+cfg.blockMinVel     = [0 5 5 5];
 % Click rate in Hz per block (faster = harder). Kept constant by default
 % so only evidence strength and time pressure change; try [8 10 12] to ramp it.
-cfg.blockClickRate  = [10 10 10];
+cfg.blockClickRate  = [10 10 10 10];
 
 cfg.mouseSampleDT   = 1/60;
+cfg.allowEarlyResponse = true;     % true: a circle can be reached while the clicks are still playing
+cfg.velGraceSamples = 11;          % no stall check before this many samples (~180 ms at 60 Hz)
 cfg.feedbackOn      = true;
 cfg.feedbackDur     = 0.6;
 cfg.circleRadius    = 50;
@@ -133,6 +139,7 @@ try
 
             stereoBuffer = BuildInterleavedClickTrain(nLeft, nRight, rate, ...
                                 cfg.clickDur, cfg.clickFreq, cfg.fs);
+            PsychPortAudio('Stop', pahandle, 1);   % wait for any sound still playing (returns at once if none)
             PsychPortAudio('FillBuffer', pahandle, stereoBuffer);
             trainDurSec = size(stereoBuffer, 2) / cfg.fs;
 
@@ -155,7 +162,7 @@ try
             end
 
             [respSide, MT, traj, status] = TrackReach(win, posLeft, posRight, r, tmo, ...
-                                cfg.mouseSampleDT, trainDurSec, minVel, pahandle);
+                                cfg.mouseSampleDT, trainDurSec, minVel, pahandle, cfg);
 
             if strcmp(status, 'abort')
                 SaveAll(results, allTrajectories, cfg, outFile, trajMatFile);
@@ -320,46 +327,70 @@ function WaitForSpecificKey(keyName)
 end
 
 function [respSide, MT, traj, status] = TrackReach(win, posLeft, posRight, radius, ...
-        timeoutSec, sampleDT, trainDurSec, minVelocity, pahandle)
-    % Plays the click train, then samples the mouse until a circle is
-    % entered, the movement stalls, or timeoutSec has passed after audio end.
+        timeoutSec, sampleDT, trainDurSec, minVelocity, pahandle, cfg)
+    % Starts the click train and samples the mouse at a fixed rate from audio
+    % onset (t = 0) until a circle is entered, the movement stalls, or
+    % timeoutSec has passed after the audio ends. The mouse is sampled WHILE
+    % the clicks play, so the stall check ("DON'T STOP") also works during the audio.
     % timeoutSec may be Inf (no limit). status: 'ok' | 'timeout' | 'stopped' | 'abort'
-    tResp = PsychPortAudio('Start', pahandle, 1, 0, 1);
-    WaitSecs('UntilTime', tResp + trainDurSec);
-    PsychPortAudio('Stop', pahandle, 1);
-
-    tEnd = tResp + trainDurSec + timeoutSec;
-    traj = zeros(0, 3);
     respSide = NaN;
     MT = NaN;
     status = 'timeout';
+    traj = nan(600, 3);
     n = 0;
 
-    while GetSecs < tEnd
-        [mx, my] = GetMouse(win);
-        t = GetSecs - tResp;
-        n = n + 1;
-        traj(n, :) = [t, mx, my];
+    tResp   = PsychPortAudio('Start', pahandle, 1, 0, 1);   % t = 0 is audio onset
+    tEnd    = tResp + trainDurSec + timeoutSec;
+    tNext   = tResp;
+    audioOn = true;
 
-        if EscPressed()   % needed because the window can now be unlimited
+    while GetSecs < tEnd
+        t = GetSecs - tResp;
+
+        if EscPressed()   % needed because the window can be unlimited
             status = 'abort'; break;
         end
 
-        if hypot(mx - posLeft(1), my - posLeft(2)) <= radius
-            respSide = 1; MT = t; status = 'ok'; break;
-        elseif hypot(mx - posRight(1), my - posRight(2)) <= radius
-            respSide = 2; MT = t; status = 'ok'; break;
+        % stop the audio once the click train is over (non-blocking)
+        if audioOn && t >= trainDurSec
+            PsychPortAudio('Stop', pahandle, 0);
+            audioOn = false;
         end
 
-        % Stall check every 10 samples (same formula as the original)
-        if minVelocity > 0 && n >= 10 && mod(n, 10) == 0
+        [mx, my] = GetMouse(win);
+        n = n + 1;
+        if n > size(traj, 1)
+            traj = [traj; nan(600, 3)]; %#ok<AGROW>
+        end
+        traj(n, :) = [t, mx, my];
+
+        % circle check (optionally only after the audio has ended)
+        if cfg.allowEarlyResponse || t >= trainDurSec
+            if hypot(mx - posLeft(1), my - posLeft(2)) <= radius
+                respSide = 1; MT = t; status = 'ok'; break;
+            elseif hypot(mx - posRight(1), my - posRight(2)) <= radius
+                respSide = 2; MT = t; status = 'ok'; break;
+            end
+        end
+
+        % Stall check every 10 samples (same formula as the original), after a grace period
+        if minVelocity > 0 && n >= max(10, cfg.velGraceSamples) && mod(n, 10) == 0
             s = hypot(traj(n,2) - traj(n-9,2), traj(n,3) - traj(n-9,3));
             if s/10 <= minVelocity
                 status = 'stopped'; break;
             end
         end
-        WaitSecs(sampleDT);
+
+        % fixed-rate sampling, scheduled against absolute time
+        tNext = tNext + sampleDT;
+        WaitSecs('UntilTime', tNext);
     end
+
+    % after a response or a stall the clicks play to the end; only ESC cuts the sound
+    if audioOn && strcmp(status, 'abort')
+        PsychPortAudio('Stop', pahandle, 0);
+    end
+    traj = traj(1:n, :);
 end
 
 function SaveAll(results, allTrajectories, cfg, outFile, matFile)
