@@ -2,16 +2,13 @@
 clear
 close all
 
-cfg.nTrials         = 100;           % number of VALID trials to collect
-cfg.clickRate       = 10;           % clicks per second (ISI = 1/clickRate)
+cfg.nTrials         = 1700;           % number of trials to collect
+cfg.clickRate       = 20;           % clicks per second (ISI = 1/clickRate)
 cfg.clickTotal      = 8;            % total number of clicks % CHANGE TO 10 FOR OTHER TRIALS
 cfg.clickDur        = 0.030;        % duration of each click, in seconds (30 ms)
 cfg.clickFreq       = 2000;         % Hz, carrier frequency of the click "pip"
-cfg.deltaAll           = [-3 -2 -1 0 1 2 3]; % click-count difference parameter (see generateTrial)
-cfg.pEar            = 0.50;
-cfg.audioLead       = 0;
-cfg.iti             = 0;            % inter-trial interval range, in seconds
-cfg.respTimeout     = 0.4;          % seconds allowed to reach a circle after audio ends
+cfg.deltaAll        = [-3 -2 -1 0 1 2 3]; % click-count difference parameter (see generateTrial)
+cfg.respTimeout     = 0.9;          % seconds allowed to reach a circle after audio ends
 cfg.minVelocity     = 3;            % min. mean speed in pixels per sample, computed over 10 samples
 cfg.velGraceSamples = 11;           % no velocity check before this many samples (~330 ms at 60 Hz)
 cfg.allowEarlyResponse = true;      % true: a circle can be reached while the clicks are still playing
@@ -42,8 +39,8 @@ matPath     = fullfile(resultsFolder, sprintf('trajectories_%s_%s.mat', subjID, 
 
 % Preallocate trial-level results (all fields are declared here, in the order they are logged)
 results = struct('trial', {}, 'correctSide', {}, 'nLeft', {}, 'nRight', {}, ...
-                 'startSide', {}, 'response', {}, 'accuracy', {}, 'MT', {}, ...
-                 'trainDur', {}, 'L_minus_R', {}, 'delta', {}, 'status', {}, 'valid', {});
+                  'response', {}, 'accuracy', {}, 'MT', {}, ...
+                 'trainDur', {}, 'L_minus_R', {}, 'delta', {},'click_seq',{}, 'status', {}, 'valid', {}, 'clickRate',{},'respTimeMax',{});
 allTrajectories = cell(1, cfg.nTrials); % each cell: Nx3 [time_s, x_pix, y_pix]; time 0 = audio onset
 
 trajFid = -1;
@@ -99,20 +96,18 @@ try
 
     %% ---- Instructions ----
     instrText = [ ...
-        'AUDITORY DISCRIMINATION TASK\n\n' ...
-        'On each trial you will hear a single stream of clicks played through\n' ...
-        'your headphones, jumping back and forth between your LEFT ear and\n' ...
-        'your RIGHT ear.\n\n' ...
-        'One ear will always end up receiving MORE clicks overall \n\n' ...
-        'Before each trial your cursor will reset to a box at the bottom of\n' ...
-        'the screen,\n\n'...
-        'Your task is to decide which ear received the LARGER number of clicks and\n' ...
-        'MOVE THE MOUSE CURSOR to touch the corresponding circle as quickly and\n' ...
-        'accurately as you can.\n\n' ...
-        'Left ear had more clicks -> reach the UPPER-LEFT circle.\n' ...
-        'Right ear had more clicks -> reach the UPPER-RIGHT circle.\n\n' ...
-        'Each trial will start as soon as you leave the start box. \n\n',...
-        'Press SPACE to begin.'];
+        'TASCA DE DISCRIMINACIÓ AUDITIVA\n\n' ...
+        'En cada assaig sentiràs un únic flux de clics reproduït pels\n' ...
+        'auriculars, que va saltant entre l''orella ESQUERRA i l''orella\n' ...
+        'DRETA.\n\n' ...
+        'Una orella sempre acabarà rebent MÉS clics en total.\n\n' ...
+        'La teva tasca és decidir quina orella ha rebut el MAJOR nombre de clics i\n' ...
+        'MOURE EL CURSOR DEL RATOLÍ per tocar el cercle corresponent tan ràpid i\n' ...
+        'amb tanta precisió com puguis.\n\n' ...
+        'L''orella esquerra ha rebut més clics -> arriba al cercle de DALT A L''ESQUERRA.\n' ...
+        'L''orella dreta ha rebut més clics -> arriba al cercle de DALT A LA DRETA.\n\n' ...
+        'Cada assaig començarà tan bon punt surtis del quadrat inicial.\n\n', ...
+        'Prem ESPAI per començar.'];
     DrawFormattedText(win, instrText, 'center', 'center', cfg.textColor);
     Screen('Flip', win);
     WaitForSpecificKey('space');
@@ -128,11 +123,10 @@ try
 
     SetMouse(startPos(1), startPos(2), win)
 
-    nValid    = 0;
     attempt   = 0;
     preloaded = false;
 
-    while nValid < cfg.nTrials
+    while attempt < cfg.nTrials || preloaded
 
         % ESC aborts the experiment; the data is saved in the catch block below
         CheckEscape();
@@ -148,9 +142,9 @@ try
             delta       = trialList(attempt, 4);
 
             % prepare the audio
-            startSide = randi(2);
-            stereoBuffer = BuildInterleavedClickTrain(nLeft, nRight, cfg.clickRate, ...
-                                     cfg.clickDur, cfg.clickFreq, cfg.fs, startSide);
+            
+            [stereoBuffer, seq] = BuildInterleavedClickTrain(nLeft, nRight, cfg.clickRate, ...
+                                     cfg.clickDur, cfg.clickFreq, cfg.fs);
             PsychPortAudio('FillBuffer', pahandle, stereoBuffer);
 
             trainDurSec = size(stereoBuffer, 2) / cfg.fs;
@@ -171,17 +165,15 @@ try
                 case 'ok'
                     acc   = double(respSide == correctSide);
                     valid = 1;
-                    nValid = nValid + 1;
                     if acc == 1
-                        fbStr = 'Correct';
+                        fbStr = 'Correcte';
                     else
-                        fbStr = 'Incorrect';
+                        fbStr = 'Incorrecte';
                     end
                 case 'not finished'
                     acc   = NaN;
                     valid = 0;
-                    fbStr = 'DONT STOP';
-                    trialList(end+1, :) = [nLeft nRight correctSide delta]; % repeat later
+                    fbStr = 'NO T''AURIS';   
                 case 'aborted'   % ESC mid-trial: keep what was recorded, don't repeat the trial
                     acc   = NaN;
                     valid = 0;
@@ -189,18 +181,17 @@ try
                 otherwise % 'timeout'
                     acc   = NaN;
                     valid = 0;
-                    fbStr = 'Too slow!';
-                    trialList(end+1, :) = [nLeft nRight correctSide delta]; % repeat later
+                    fbStr = 'Massa lent!'; 
             end
 
             % ---- Feedback (write it, then erase it) ----
             if cfg.feedbackOn && ~abortNow
                 screenRect = Screen('Rect', win);
                 color = cfg.textColor;
-                if strcmp(fbStr, 'DONT STOP')
+                if strcmp(fbStr, 'NO T''AURIS')
                     color = [255 0 0];
                 end
-                [~, ~, boundsText] = DrawFormattedText(win, fbStr, 'center', 'center', color, [], [], [], [], [], screenRect);
+                [~, ~, boundsText] = DrawFormattedText(win, fbStr, 'center', screenYpix*0.2, color, [], [], [], [], [], screenRect);
                 Screen('Flip', win, 0, 1);
                 if WaitSecsOrEsc(cfg.feedbackDur)   % true if ESC was pressed meanwhile
                     abortNow = true;                % finish logging this trial, then abort
@@ -217,15 +208,17 @@ try
             results(attempt).correctSide = SideLabel(correctSide);
             results(attempt).nLeft       = nLeft;
             results(attempt).nRight      = nRight;
-            results(attempt).startSide   = SideLabel(startSide);
             results(attempt).response    = SideLabel(respSide);   % 'none' if no circle was reached
             results(attempt).accuracy    = acc;                   % NaN if no circle was reached
             results(attempt).MT          = MT;                    % s from audio onset to circle (NaN if none)
             results(attempt).trainDur    = trainDurSec;           % MT - trainDur = time after audio end
             results(attempt).L_minus_R   = nLeft - nRight;
             results(attempt).delta       = delta;
+            results(attempt).click_seq   = char('L' * (seq == 1) + 'R' * (seq == 2));
             results(attempt).status      = status;
             results(attempt).valid       = valid;
+            results(attempt).clickRate   = cfg.clickRate;
+            results(attempt).respTimeMax = cfg.respTimeout;
 
             % ---- Store + write out full trajectory for this trial ----
             allTrajectories{attempt} = traj;
@@ -240,7 +233,7 @@ try
             end
 
             % ---- Wait until the mouse goes back to the starting position ----
-            [~, ~, boundsText] = DrawFormattedText(win, 'Go back to the box', 'center', 'center', [255 255 255]);
+            [~, ~, boundsText] = DrawFormattedText(win, 'Torna a la caixa', 'center', screenYpix*0.2, [255 255 255]);
             Screen('Flip', win, 0, 1)
 
             [x, y] = GetMouse(win);
@@ -277,6 +270,7 @@ try
     %% ---- Cleanup ----
     ListenChar(0);
     PsychPortAudio('Close', pahandle);
+    PsychPortAudio('Close', pamaster);
     sca;
 
 catch err
@@ -330,7 +324,7 @@ function click = GenerateClick(fs, dur, freq)
 
 end
 
-function stereo = BuildInterleavedClickTrain(nLeft, nRight, rate, dur, freq, fs, startSide)
+function [stereo, seq] = BuildInterleavedClickTrain(nLeft, nRight, rate, dur, freq, fs)
     % Builds a 2 x nSamples stereo buffer containing a SINGLE click
     % stream at a constant rate of `rate` clicks/second (one click event
     % every 1/rate seconds), with each individual click routed entirely
@@ -419,22 +413,41 @@ function [respSide, MT, traj, status] = TrackReach(win, posLeft, posRight, radiu
         end
         traj(n, :) = [t, mx, my];
 
-        % velocity check every 10 samples (10 intervals, so n-10 .. n), after a grace period
+        if cfg.allowEarlyResponse || t >= trainDurSec
+
+            if hypot(mx - posLeft(1), my - posLeft(2)) <= radius
+                respSide = 1;
+                MT = t;
+                status = 'ok';
+                break
+
+            elseif hypot(mx - posRight(1), my - posRight(2)) <= radius
+                respSide = 2;
+                MT = t;
+                status = 'ok';
+                break
+            end
+
+        end
+
+
         if n >= cfg.velGraceSamples && mod(n, 10) == 0
-            s = hypot(traj(n,2) - traj(n-10,2), traj(n,3) - traj(n-10,3));
-            if s / 10 <= cfg.minVelocity
+
+            % Coordinates from the last 10 intervals
+            recentXY = traj(n-10:n, 2:3);
+
+            % Distance travelled between consecutive samples
+            stepDistances = hypot(diff(recentXY(:,1)), ...
+                                  diff(recentXY(:,2)));
+
+            % Mean speed in pixels per sample
+            meanVelocity = mean(stepDistances);
+
+            if meanVelocity <= cfg.minVelocity
                 status = 'not finished';
                 break
             end
-        end
 
-        % circle check (optionally only after the audio has ended)
-        if cfg.allowEarlyResponse || t >= trainDurSec
-            if hypot(mx - posLeft(1), my - posLeft(2)) <= radius
-                respSide = 1;  MT = t;  status = 'ok';  break
-            elseif hypot(mx - posRight(1), my - posRight(2)) <= radius
-                respSide = 2;  MT = t;  status = 'ok';  break
-            end
         end
 
         % fixed-rate sampling, scheduled against absolute time
@@ -493,7 +506,7 @@ end
 function [nLeft, nRight, correctSide, delta] = generateTrial(deltaAll, clickTotal)
 
         delta = deltaAll(randi(numel(deltaAll)));
-        nLeft = clickTotal/2 - delta;
+        nLeft = clickTotal/2 + delta;
         nRight = clickTotal - nLeft;
 
         if nLeft > nRight
