@@ -1,22 +1,60 @@
 %% PLOTTING
-% --- load data
-clear all
+% --- load data ---
 
-[f, p] = uigetfile('results - auditory discrimination task/trajectories_*.csv', 'Select trajectories .csv');
-if isequal(f, 0); return; end
-trajectories = readtable(fullfile(p, f));
+clear; clc;
 
-[f, p] = uigetfile('results - auditory discrimination task/data_*.csv', 'Select data .csv');
-if isequal(f, 0); return; end
-results = readtable(fullfile(p,f));
+folder = fullfile(pwd, 'results - auditory discrimination task');
+[files, p] = uigetfile({'data_*.csv','Data files'}, ...
+    'Select data .csv files (Ctrl/Shift to select several)', ...
+    [folder filesep], 'MultiSelect', 'on');
+if isequal(files, 0); return; end
+files = cellstr(files);
 
-if ismember('valid', results.Properties.VariableNames)
-    keep = results.valid == 1;
+resCell  = cell(1, numel(files));
+trajCell = cell(1, numel(files));
+offset   = 0;                        % trials already used by earlier participants
+
+for i = 1:numel(files)
+    f = files{i};                    % data_<subjID>_<yyyymmdd>_<HHMMSS>.csv
+
+    trajFile = fullfile(p, ['trajectories_' f(6:end)]);
+    if ~isfile(trajFile)
+        warning('No trajectory file for %s - skipped.', f);
+        continue
+    end
+
+    R = readtable(fullfile(p, f));
+    T = readtable(trajFile);
+
+    % continue trial numbering after the previous participant
+    nTrials = max(R.trial);          % trials in this file, before removing invalid ones
+    R.trial = R.trial + offset;
+    T.trial = T.trial + offset;
+    offset  = offset + nTrials;
+
+    % keep valid trials only
+    keep = true(height(R), 1);
+    invalid = true(height(R),1);
+    if ismember('valid', R.Properties.VariableNames)
+        keep = R.valid == 1;
+        invalid = R.valid == 0;
+    end
+    invalidTrials = R.trial(invalid);
+    R_inv = R(invalid,:);
+    T_inv = T(ismember(T.trial, invalidTrials),:);
+
+    validTrials = R.trial(keep);
+    R = R(keep, :);
+    T = T(ismember(T.trial, validTrials), :);
+    
+    resCell{i}  = R;
+    trajCell{i} = T;
 end
 
-validTrials = results.trial(keep);
-results = results(keep,:);
-trajectories = trajectories(ismember(trajectories.trial, validTrials),:);
+results      = vertcat(resCell{:});
+trajectories = vertcat(trajCell{:});
+
+fprintf('%d valid trials | %d trajectory samples\n', height(results), height(trajectories));
 
 %% movement time against L-R
 deltaLR = [results.L_minus_R];
@@ -71,13 +109,46 @@ accuracy = [results.accuracy];
 acc = [];
 for i = 1:length(LR)
     idx_acc = deltaLR == LR(i);
-    acc = [acc mean(accuracy(idx_acc))];
+    acc = [acc mean(accuracy(idx_acc),'omitnan')];
 end
 figure
 plot(LR, acc)
 xlabel('L-R')
 ylabel('accuracy')
 xlim([min(LR), max(LR)])
+
+%% invalid trials against delta
+delta = unique(R_inv.delta);
+n_invalid_all = height(R_inv);
+
+invalid_prop = zeros(1,length(delta));
+for k = 1:length(delta)
+    one_delta = delta(k);
+    idx = R_inv.delta == one_delta;
+    trials_delta = R_inv(idx,:);
+    n_invalid_delta = height(trials_delta);
+    invalid_prop(k) = n_invalid_delta/n_invalid_all;
+end
+
+figure
+plot(delta, invalid_prop*100, '-o', 'LineWidth', 1.5, ...
+    'MarkerSize', 6)
+
+xlabel('\Delta')
+ylabel('Contribution to all wrong trials (%)')
+title('Distribution of wrong trials across \Delta')
+
+ylim([0 100])
+grid on
+box off
+
+%% invalid trials against trial blocks
+% nBlocks = 5;
+% n_trials = height(R.trial);
+% 
+% trial_per_block = n_trials/nBlocks;
+% block1_idx = 
+
 
 %% trajectories 
 screenW = 1920;  screenH = 1080;     % screen used in the experiment
@@ -169,6 +240,7 @@ box on
 x_position = trajectories.x_pix;
 y_position = trajectories.y_pix;
 time = trajectories.time_s;
+Ntrial = length(results.trial);
 ss           = get(0,'ScreenSize');
 screenX      = ss(3);             
 screenY      = ss(4); 
@@ -208,32 +280,22 @@ xlabel('x position')
 ylabel('y position')
 set(gca,'YDir','reverse')
 
-%% MEAN TRAJECTORIES OF LEFT CHOICES, BY CLICK EVIDENCE (L clicks - R clicks)
-% Only trials in which the participant reached the LEFT circle are used, so
-% nothing is mirrored. Each trial's congruence with the choice is
-%   L_minus_R = nLeft - nRight
-%   positive -> more clicks on the chosen (left) side: congruent   (blue)
-%   zero     -> tie                                                (grey)
-%   negative -> more clicks on the other (right) side: incongruent (orange)
-% Darker colour = larger click difference. The screen is rotated so the
-% horizontal axis is progress towards the circles and the vertical axis is
-% horizontal screen position relative to where the trajectories start (0 = start).
-
+%% CONGRUENT AND INCONGRUENT 
 %% ---- Settings ----
-nPts         = 1000;              % points per time-normalised trajectory
-screenX      = 1536;              % screen width in px used in the experiment (CHANGE IF DIFFERENT)
-screenY      = 864;               % screen height in px used in the experiment (CHANGE IF DIFFERENT)
+nPts         = 1000;              % points on the common time grid
+screenX      = 1536;              % screen width in px (CHANGE IF DIFFERENT)
+screenY      = 864;               % screen height in px (CHANGE IF DIFFERENT)
 circleXY     = [384 216];         % centre of the left response circle in screen px (x, y)
 circleR      = 50;                % radius of the response circle in px
 blueBase     = [0 0.45 0.85];     % congruent
 orangeBase   = [0.95 0.5 0.05];   % incongruent
 tieColor     = [0.55 0.55 0.55];
 useValidOnly = true;
-alignToTrialStart = true;         % true: every trial starts exactly at (0,0) (its own first sample is subtracted)
-                                  % false: all trials share one origin (see originFromData below)
 minTrials    = 1;                 % skip levels with fewer left-choice trials than this
-originFromData = true;            % true: 0 = median starting point of the plotted trajectories
-                                  % false: 0 = centre of the start box (from the screen size)
+timeMode     = 'real';            % 'real'       = seconds since trial start
+                                  % 'normalised' = 0..1 of each trial's duration
+tMaxPrctile  = 90;                % real mode: x-axis ends at this percentile of trial durations
+                                  % (lower = less of the "parked at the circle" tail)
 
 %% ---- Prepare data ----
 % Expects: results      (table or struct array)
@@ -271,29 +333,37 @@ levels = unique(LmR(ok));
 levels = levels(:)';                                % row, so the loop gets one level at a time
 maxLev = max(abs(levels));
 
-%% ---- Geometry ----
-% Origin (0,0): where the plotted trajectories start
-if originFromData
-    firstXY = nan(numel(trialNum), 2);
-    for i = find(ok)
-        T = trajs{trialNum(i)};
-        if ~isempty(T), firstXY(i, :) = T(1, 2:3); end   % first sample of the trial [x y]
-    end
-    x0 = median(firstXY(:, 1), 'omitnan');
-    y0 = median(firstXY(:, 2), 'omitnan');
-else
-    x0 = screenX / 2;                               % start box centre
-    y0 = screenY * 0.9;
+%% ---- Trial durations and start position ----
+firstX = nan(1, numel(trialNum));
+dur    = nan(1, numel(trialNum));
+for i = find(ok)
+    T = trajs{trialNum(i)};
+    if isempty(T) || size(T, 1) < 2, continue, end
+    firstX(i) = T(1, 2);
+    dur(i)    = T(end, 1) - T(1, 1);
 end
-progress = @(y) y0 - y;                             % up the screen = positive
+x0 = median(firstX, 'omitnan');                     % median start x, used to place the circle
 
+%% ---- Common time grid ----
+switch timeMode
+    case 'real'
+        tMax  = prctile(dur(~isnan(dur)), tMaxPrctile);
+        tGrid = linspace(0, tMax, nPts);
+        xlab  = 'Time since trial start (s)';
+    case 'normalised'
+        tGrid = linspace(0, 1, nPts);
+        xlab  = 'Normalised time (0 = start, 1 = end of movement)';
+    otherwise
+        error('timeMode must be ''real'' or ''normalised''.');
+end
+
+%% ---- Plot ----
 figure('Color', 'w', 'Position', [100 100 1000 600]); hold on
-yline(0, 'k--', 'LineWidth', 1.5);
-th = linspace(0, 2*pi, 100);
-plot(progress(circleXY(2)) + circleR*cos(th), (circleXY(1) - x0) + circleR*sin(th), ...
-     'Color', [0.6 0.6 0.6], 'LineWidth', 1.5);     % left response circle
+yline(0, 'k--', 'LineWidth', 1.5);                              % trial start position
+yline(circleXY(1) - x0, 'k:', 'LineWidth', 1);                  % circle centre (lateral)
+yline(circleXY(1) - x0 + [-circleR circleR], '-', ...
+      'Color', [0.6 0.6 0.6]);                                  % circle lateral edges
 
-plot(progress(circleXY(2)), circleXY(1) - x0, 'k+', 'MarkerSize', 8);   % circle centre
 hLeg = []; legTxt = {};
 for lev = levels
     idx = find(ok & LmR == lev);
@@ -311,40 +381,46 @@ for lev = levels
         lab = 'Tie';
     end
 
-    M = nan(numel(idx), nPts, 2);
+    M = nan(numel(idx), nPts);
     for k = 1:numel(idx)
         T = trajs{trialNum(idx(k))};
         if isempty(T) || size(T, 1) < 2, continue, end
-        if alignToTrialStart
-            xx   = T(:, 2) - T(1, 2);               % lateral position: 0 at the start of the trial
-            prog = T(1, 3) - T(:, 3);               % progress: 0 at the start of the trial
-        else
-            xx   = T(:, 2) - x0;                    % lateral position relative to the shared origin
-            prog = progress(T(:, 3));
-        end                          % 0 = where the trajectories start, no mirroring
-        q = linspace(1, size(T, 1), nPts);
-        M(k, :, 1) = interp1(1:size(T, 1), prog, q);
-        M(k, :, 2) = interp1(1:size(T, 1), xx, q);
+
+        t  = T(:, 1) - T(1, 1);                     % time, 0 at trial start
+        xx = T(:, 2) - T(1, 2);                     % lateral position, 0 at trial start
+
+        % interp1 needs strictly increasing time points
+        [t, u] = unique(t);
+        xx = xx(u);
+        if numel(t) < 2, continue, end
+
+        if strcmp(timeMode, 'normalised')
+            t = t / t(end);
+        end
+
+        % Hold the final position once the trial has ended, so the same set of
+        % trials contributes to the mean at every time point (no drop-out steps).
+        M(k, :) = interp1(t, xx, tGrid, 'linear', xx(end));
     end
 
-    nUsed = nnz(~isnan(M(:, 1, 1)));
+    nUsed = nnz(~isnan(M(:, 1)));
     if nUsed == 0, continue, end
-    mx = squeeze(mean(M(:, :, 1), 1, 'omitnan'));
-    my = squeeze(mean(M(:, :, 2), 1, 'omitnan'));
-    h = plot(mx, my, 'Color', col, 'LineWidth', 2.5);
+
+    my = mean(M, 1, 'omitnan');
+    h = plot(tGrid, my, 'Color', col, 'LineWidth', 2.5);
     hLeg(end+1) = h; %#ok<SAGROW>
     legTxt{end+1} = sprintf('%s, L-R = %+d (n=%d)', lab, lev, nUsed); %#ok<SAGROW>
 end
 
-xlabel('Progress towards the circles (px)');
+xlabel(xlab);
 ylabel('Horizontal position relative to trajectory start (px)');
-title('Left choices: mean trajectories by click evidence (L - R clicks)');
+title('Left choices: mean horizontal position over time by click evidence (L - R clicks)');
 legend(hLeg, legTxt, 'Location', 'eastoutside');
-xlim([-20 progress(circleXY(2)) + circleR + 20]);
-ylim([-0.3*screenX 0.3*screenX]);
-set(gca,'YDir','reverse')
-daspect([1 1 1]);                                   % equal scaling, so the circle looks round
+set(gca, 'YDir', 'reverse');                        % leftward movement plotted upwards, as before
+xlim([0 tGrid(end)]);
 box on
+
+%% X AND Y VELOCITY DENSITY PLOTS
 %% ---- Settings ----
 dt           = 1/60;              % time step of the common time grid (s)
 tMax         = 1.2;               % plot window in s; 0 = audio onset
